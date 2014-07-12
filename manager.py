@@ -12,14 +12,15 @@ from helper import *
 
 
 class TPushManager(object):
-    def __init__(self, src_pool, dst_hosts, port_map, command, retry):
+    def __init__(self, src_pool, dst_hosts, command, options):
         # optlist: [server_name, server_ip, server_sshport]
         self.src_pool = src_pool
         self.dst_hosts = dst_hosts
-        self.sshport_map = port_map
         self.command = command
-        self.max_retry = retry
+        self.options = options
 
+        self.max_retry = options.retry
+        self.sshport_map = options.sshport_map
         self.all_dst_hosts = dst_hosts
         self.src_ips = self.src_pool.src_ips()
         self.total_dsts = len(dst_hosts)
@@ -62,7 +63,7 @@ class TPushManager(object):
         show_info = False
         for dst_ip in self.dst_hosts[:]:
             src_ip = self.src_pool.get_src(dst_ip)
-            logfile = "%s/%s_from_%s.log" % (G_LOG_DIR, dst_ip, src_ip)
+            logfile = "%s/%s_from_%s.log" % (self.options.logdir, dst_ip, src_ip)
             if src_ip is None:
                 logger.debug('源IP池中没有可用IP')
                 break

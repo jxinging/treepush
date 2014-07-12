@@ -95,7 +95,7 @@ if __name__ == '__main__':
 
     logger.info("Command: %s", command)
     src_pool = SourcePool(options.max_conn, options.source_ips)
-    mgr = TPushManager(src_pool, [x[1] for x in dst_optlist], options.sshport_map, command, options.retry)
+    mgr = TPushManager(src_pool, [x[1] for x in dst_optlist], command, options)
     try:
         mgr.main_loop(0.1)
     except KeyboardInterrupt, e:
