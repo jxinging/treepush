@@ -6,6 +6,7 @@ import struct
 import socket
 import tempfile
 import subprocess
+import logging
 
 from globals import G_OPTIONS
 
@@ -85,9 +86,36 @@ def get_sshport_by_ip(ip):
     else:
         return 22
 
+
 class FailPopen(object):
     returncode = 1
+
     def poll(self):
         return True
 
 fail_popen = FailPopen()
+
+
+class Logger(logging.Logger):
+    LOG_SUCCESS = logging.ERROR+1
+    LOG_FAIL = logging.ERROR+2
+
+    def __init__(self, name, level):
+        logging.Logger.__init__(name, level)
+
+        logging.addLevelName(self.LOG_SUCCESS, "\033[1;32mSUCCESS\033[0m")
+        logging.addLevelName(self.LOG_FAIL, "\033[5;31mFAIL\033[0m")
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] # %(message)s')
+        handler.setFormatter(formatter)
+        self.addHandler(handler)
+
+    def success(self, msg, *args, **kwargs):
+        return self.log(self.LOG_SUCCESS, msg, *args, **kwargs)
+
+    def fail(self, msg, *args, **kwargs):
+        return self.log(self.LOG_FAIL, msg, *args, **kwargs)
+
+logging.setLoggerClass(Logger)
+logger = logging.getLogger("TPush")
+logger.setLevel(logging.DEBUG)

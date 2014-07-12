@@ -63,8 +63,8 @@ if __name__ == '__main__':
         sys.exit(127)
 
     G_OPTIONS = options
-    G_OPTIONS.source_ips = []
-    G_OPTIONS.sshport_map = {}
+    options.source_ips = []
+    options.sshport_map = {}
     for host in options.source.split(','):
         if host.find('@') >= 0:
             user, host = host.split('@', 1)
@@ -72,12 +72,12 @@ if __name__ == '__main__':
             ip, port = host.split(':', 1)
         else:
             ip, port = host, 22
-        G_OPTIONS.source_ips.append(ip)
-        G_OPTIONS.sshport_map[ip] = port
+        options.source_ips.append(ip)
+        options.sshport_map[ip] = port
 
     command = ' '.join(other_args)
 
-    if G_OPTIONS.debug:
+    if options.debug:
         G_LOGGER.setLevel(logging.DEBUG)
     else:
         G_LOGGER.setLevel(logging.INFO)
@@ -86,13 +86,13 @@ if __name__ == '__main__':
         os.rename(G_LOG_DIR, "%s.%d" % (G_LOG_DIR, int(time.time())))
     os.mkdir(G_LOG_DIR)
 
-    dst_optlist = get_optlist_by_listfile(G_OPTIONS.listfile)
+    dst_optlist = get_optlist_by_listfile(options.listfile)
 
     for dst_host in dst_optlist[:]:
-        G_OPTIONS.sshport_map[dst_host[1]] = dst_host[2]
+        options.sshport_map[dst_host[1]] = dst_host[2]
 
-    src_pool = SourcePool(G_OPTIONS.max_conn, G_OPTIONS.source_ips)
-    mgr = TPushManager(src_pool, [x[1] for x in dst_optlist], command, G_OPTIONS.retry)
+    src_pool = SourcePool(options.max_conn, options.source_ips)
+    mgr = TPushManager(src_pool, [x[1] for x in dst_optlist], command, options.retry)
     try:
         mgr.main_loop(0.1)
     except KeyboardInterrupt, e:
