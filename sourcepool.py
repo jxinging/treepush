@@ -1,7 +1,6 @@
 # coding: utf8
 __author__ = 'JinXing'
 
-from globals import G_LOGGER
 from helper import *
 
 
@@ -12,7 +11,7 @@ class SourcePool(object):
         self.max_conn = max_conn    # 每个源的最大连接数
         for ip in src_ips:
             self.pool[ip] = {'ip': ip, 'conn': max_conn}    # conn 表示还可以建立的连接数
-            G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
+            logger.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
 
     def __len__(self):
         return len(self.pool)
@@ -30,7 +29,7 @@ class SourcePool(object):
         """dst, 目标机器的IP(用于搜索同一段的源IP)
         need_conn, 最少可用连接
         """
-        G_LOGGER.debug('get_src(%s, %d)', dst_ip, need_conn)
+        logger.debug('get_src(%s, %d)', dst_ip, need_conn)
 
         available_src_ips = [x['ip'] for x in self.pool.itervalues() if x['conn'] >= need_conn]
 
@@ -70,35 +69,35 @@ class SourcePool(object):
         if ip in self.pool:
             return None
         self.pool[ip] = {'ip': ip, 'conn': self.max_conn}
-        G_LOGGER.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
+        logger.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
         return ip
 
     def del_src(self, ip):
         if ip in self.pool:
             self.pool.pop(ip)
-            G_LOGGER.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
+            logger.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
 
     def add_src_conn(self, ip, num=1):
         if ip not in self.pool:
-            G_LOGGER.debug('%s pool中不存在', ip)
+            logger.debug('%s pool中不存在', ip)
             return
         if self.pool[ip]['conn'] >= self.max_conn:
-            G_LOGGER.debug('%s 可用连接数已达最大值', ip)
+            logger.debug('%s 可用连接数已达最大值', ip)
             return
 
         self.pool[ip]['conn'] += num
-        G_LOGGER.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
+        logger.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
         return self.pool[ip]['conn']
 
     def del_src_conn(self, ip, num=1):
         if ip not in self.pool:
-            G_LOGGER.debug('pool中不存在 %s', ip)
+            logger.debug('pool中不存在 %s', ip)
             return
         if self.pool[ip]['conn'] <= 0:
-            G_LOGGER.debug('%s 无可用连接', ip)
+            logger.debug('%s 无可用连接', ip)
             return
 
         # print self.pool[ip]['conn'], num
         self.pool[ip]['conn'] -= num
-        G_LOGGER.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
+        logger.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
         return self.pool[ip]['conn']

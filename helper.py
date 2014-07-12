@@ -8,11 +8,9 @@ import tempfile
 import subprocess
 import logging
 
-from globals import G_OPTIONS
 
-
-def subprocess_ssh(host, cmd, env=None, logfile=None, _port=22):
-    port = int(_port)
+def subprocess_ssh(host, cmd, env=None, logfile=None, port=22):
+    port = int(port)
     ssh_control_dir = os.path.join(tempfile.gettempdir(), '.tpush_ssh_control')
 
     if not os.path.exists(ssh_control_dir):
@@ -30,10 +28,10 @@ def subprocess_ssh(host, cmd, env=None, logfile=None, _port=22):
                     '-o', 'ConnectTimeout=4'])
     ssh_args.append(host)
     if env:
-        for name, value in env.items():
+        for name, value in env.iteritems():
             ssh_args.append("export %s=%s;" % (name, value))
     ssh_args.append("echo '%s:%s ssh connection success';" % (host, port))  # 用于判断连接在哪一层被断开
-    ssh_args.append("sleep $((RANDOM%10+5));")  # 如果命令执行过快会出错(连接过快，被拒绝), 这里添加一个随机延时
+    # ssh_args.append("sleep $((RANDOM%10+5));")  # 如果命令执行过快会出错(连接过快，被拒绝), 这里添加一个随机延时
     ssh_args.append(cmd)
 
     if logfile is not None:
@@ -41,6 +39,7 @@ def subprocess_ssh(host, cmd, env=None, logfile=None, _port=22):
     else:
         r_stdout = subprocess.PIPE
     r_stdout.write('ssh '+' '.join(ssh_args)+'\n')
+    # logger.info("ssh_args: %s", ' '.join(ssh_args))
     p = subprocess.Popen(['/usr/bin/ssh']+ssh_args, shell=False, close_fds=True,
                          stdin=subprocess.PIPE, stdout=r_stdout, stderr=subprocess.STDOUT)
     return p
@@ -80,13 +79,6 @@ def get_subnet(ip):
     return subnet
 
 
-def get_sshport_by_ip(ip):
-    if ip in G_OPTIONS.sshport_map:
-        return int(G_OPTIONS.sshport_map[ip])
-    else:
-        return 22
-
-
 class FailPopen(object):
     returncode = 1
 
@@ -100,9 +92,8 @@ class Logger(logging.Logger):
     LOG_SUCCESS = logging.ERROR+1
     LOG_FAIL = logging.ERROR+2
 
-    def __init__(self, name, level):
-        logging.Logger.__init__(name, level)
-
+    def __init__(self, name, level=logging.WARNING):
+        logging.Logger.__init__(self, name, level)
         logging.addLevelName(self.LOG_SUCCESS, "\033[1;32mSUCCESS\033[0m")
         logging.addLevelName(self.LOG_FAIL, "\033[5;31mFAIL\033[0m")
         handler = logging.StreamHandler()
@@ -118,4 +109,4 @@ class Logger(logging.Logger):
 
 logging.setLoggerClass(Logger)
 logger = logging.getLogger("TPush")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
