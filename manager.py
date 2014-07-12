@@ -19,7 +19,7 @@ class TPushManager(object):
         self.command = command
         self.max_retry = retry
 
-        self.src_ips = self.src_pool.keys()
+        self.src_ips = self.src_pool.src_ips()
         self.total_dsts = len(dst_hosts)
 
         self.retry_count = {}
@@ -34,12 +34,12 @@ class TPushManager(object):
         ## 下面对要操作的IP进行重排，在不同的IP段选择一个IP移到列表前面
         ## 扩大第一轮更新时的目标机器网段范围, 下一轮更新就会有更大的几率选择到在同一段的源IP
         subnet_set = set()
-        for ip in self.src_ips[:]:
+        for ip in self.dst_hosts[:]:
             subnet = get_subnet(ip)
             if subnet not in subnet_set:
                 subnet_set.add(subnet)
-                self.src_ips.remove(ip)
-                self.src_ips.insert(0, ip)
+                self.dst_hosts.remove(ip)
+                self.dst_hosts.insert(0, ip)
 
     def __str__(self):
         return "source:%s, total:%s, done:%s, error:%s, running:%s, pending:%s" % (
@@ -68,8 +68,8 @@ class TPushManager(object):
 
                 self.connections.remove(conn)
                 self.running_hosts.remove(conn.dst_ip)
-                self.src_ips.append(conn.dst_ip)
-                self.src_pool.add_conn(conn.src_ip)
+                self.dst_hosts.append(conn.dst_ip)
+                self.src_pool.add_src_conn(conn.src_ip)
 
     def wait_command(self, timeout=0.01):
         r, w, _ = select.select([sys.stdin], [], [], timeout)
@@ -104,12 +104,12 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
 
     def do_cmd_show(self, *_):
         info = []
-        if len(self.src_ips) > 0:
+        if len(self.dst_hosts) > 0:
             info.append("pending hosts: ")
-            for ip in self.src_ips:
+            for ip in self.dst_hosts:
                 info.append(str(ip))
         if len(self.connections) > 0:
-            info.append("running sessions: ")
+            info.append("running connections: ")
             for s in self.connections:
                 info.append(str(s))
         print '\n'.join(info)
@@ -140,45 +140,45 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
                 conn.ssh_process.wait()
             self.connections.remove(conn)
             self.running_hosts.remove(conn.dst_ip)
-            self.src_ips.append(conn.dst_ip)
-            self.src_pool.add_conn(conn.src_ip)
+            self.dst_hosts.append(conn.dst_ip)
+            self.src_pool.add_src_conn(conn.src_ip)
 
     def do_loop(self):
         show_info = False
-        for to_ip in self.src_ips[:]:
-            s_ip = self.src_pool.get_ip(to_ip)
-            logfile = "%s/%s_from_%s.log" % (G_LOG_DIR, to_ip, s_ip)
-            if s_ip is None:
+        for dst_ip in self.dst_hosts[:]:
+            src_ip = self.src_pool.get_src(dst_ip)
+            logfile = "%s/%s_from_%s.log" % (G_LOG_DIR, dst_ip, src_ip)
+            if src_ip is None:
                 G_LOGGER.debug('源IP池中没有可用IP')
                 break
             try:
                 self.ssh_master_lock.acquire()
-                sshport = get_sshport_by_ip(s_ip)
-                ssh_process = subprocess_ssh(s_ip, self.run_cmd, port=sshport, logfile=logfile,
+                sshport = get_sshport_by_ip(src_ip)
+                ssh_process = subprocess_ssh(src_ip, self.command, port=sshport, logfile=logfile,
                                                 env={
-                                                    "TPUSH_TO_IP": to_ip,
-                                                    "TPUSH_FROM_IP": s_ip,
+                                                    "TPUSH_FROM_IP": src_ip,
+                                                    "TPUSH_TO_IP": dst_ip,
                                                     "TPUSH_TO_SSHPORT": sshport
                                                 })
             except Exception, _:
-                G_LOGGER.log(LOG_FAIL, "start cmd error, source_ip: %s, target_ip: %s", s_ip, to_ip, exc_info=True)
-                self.src_pool.add_conn(s_ip)   # 调用 get_ip() 时连接数自动减1，所以这里要加回去
-                self.error_hosts.append(to_ip)
-                continue
+                G_LOGGER.log(LOG_FAIL, "start cmd error, source_ip: %s, target_ip: %s", src_ip, dst_ip, exc_info=True)
+                ssh_process = fail_popen
+            else:
+                G_LOGGER.info('### [RUN] %s -> %s', src_ip, dst_ip)
             finally:
                 self.ssh_master_lock.release()
 
-            self.src_ips.remove(to_ip)
-            G_LOGGER.info('### [RUN] %s -> %s', s_ip, to_ip)
+            self.dst_hosts.remove(dst_ip)
             show_info = True
-            self.running_hosts.append(to_ip)
-            conn = Connection(s_ip, to_ip, ssh_process, logfile)
+            self.running_hosts.append(dst_ip)
+            conn = Connection(src_ip, dst_ip, ssh_process, logfile)
             self.connections.append(conn)
 
         for conn in self.connections[:]:
-            if conn.ssh_process.poll() is not None:
+            if conn.ssh_process.poll():
                 self.connections.remove(conn)
                 self.running_hosts.remove(conn.dst_ip)
+                self.src_pool.add_src_conn(conn.src_ip)
                 if conn.ssh_process.returncode != 0:
                     if conn.dst_ip not in self.retry_count:
                         self.retry_count[conn.dst_ip] = 0
@@ -192,20 +192,18 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
                         self.retry_count[conn.dst_ip] += 1
                         G_LOGGER.info('### [RETRY]#%s %s, tail log: %s\n%s', self.retry_count[conn.dst_ip],
                                         conn.dst_ip, conn.logfile, '\n'.join(open(conn.logfile).readlines()[-2:]))
-                        self.src_ips.append(conn.dst_ip)
-                    self.src_pool.add_conn(conn.src_ip)
+                        self.dst_hosts.append(conn.dst_ip)
                 else:
                     G_LOGGER.log(LOG_SUCCESS, '### [DONE] %s -> %s', conn.src_ip, conn.dst_ip)
                     show_info = True
                     self.done_hosts.append(conn.dst_ip)
-                    self.src_pool.add_conn(conn.src_ip)
                     if not self.src_pool.has_ip(conn.dst_ip):
                         self.src_pool.add_ip(conn.dst_ip)    # 添加新的IP到更新源池
 
         if show_info:
             G_LOGGER.info(str(self))
 
-        if len(self.src_ips) == 0 and len(self.running_hosts) == 0:
+        if len(self.dst_hosts) == 0 and len(self.running_hosts) == 0:
             G_LOGGER.info('#### 操作结束')
             return False
 
@@ -235,5 +233,5 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
         print ' '.join(self.done_hosts)
         print '################## 失败列表(%s) ##################' % len(self.error_hosts)
         print ' '.join(self.error_hosts)
-        print '################## 未处理列表(%s) ##################' % len(self.src_ips)
-        print ' '.join(self.src_ips)
+        print '################## 未处理列表(%s) ##################' % len(self.dst_hosts)
+        print ' '.join(self.dst_hosts)

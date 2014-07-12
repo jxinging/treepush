@@ -92,7 +92,7 @@ if __name__ == '__main__':
         G_OPTIONS.sshport_map[dst_host[1]] = dst_host[2]
 
     src_pool = SourcePool(G_OPTIONS.max_conn, G_OPTIONS.source_ips)
-    mgr = TPushManager(src_pool, command, [x[0] for x in dst_optlist])
+    mgr = TPushManager(src_pool, [x[1] for x in dst_optlist], command, G_OPTIONS.retry)
     try:
         mgr.main_loop(0.1)
     except KeyboardInterrupt, e:

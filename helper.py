@@ -84,3 +84,10 @@ def get_sshport_by_ip(ip):
         return int(G_OPTIONS.sshport_map[ip])
     else:
         return 22
+
+class FailPopen(object):
+    returncode = 1
+    def poll(self):
+        return True
+
+fail_popen = FailPopen()

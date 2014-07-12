@@ -17,6 +17,8 @@ class SourcePool(object):
     def __len__(self):
         return len(self.pool)
 
+    def src_ips(self):
+        return self.pool.keys()
     # def _print(self):
     #     for ip in self.pool:
     #         print ip, self.pool[ip]['conn']
@@ -36,7 +38,7 @@ class SourcePool(object):
             return None
 
         if dst_ip is None:
-            self.del_conn(available_src_ips[0])
+            self.del_src_conn(available_src_ips[0])
             return available_src_ips[0]
 
         dst_ip_int = ip2long(dst_ip)
@@ -44,7 +46,7 @@ class SourcePool(object):
         def get_src_ip_rank(src_ip):
             int_ip = ip2long(src_ip)
             distance = abs(dst_ip_int-int_ip)
-            if ip in self.pool:
+            if src_ip in self.pool:
                 available_conn = self.pool[ip]['conn']
             else:
                 available_conn = 0
@@ -53,13 +55,13 @@ class SourcePool(object):
 
         # 指定了目标IP, 下面尝试获取一个IP段相近的IP
         min_rank_ip = None
-        min_rank = get_src_ip_rank('255.255.255.255', dst_ip_int)
+        min_rank = get_src_ip_rank('255.255.255.255')
         for ip in available_src_ips:
             if get_src_ip_rank(ip) < min_rank:
                 min_rank_ip = ip
-                min_rank = get_src_ip_rank(min_rank_ip, dst_ip_int)
+                min_rank = get_src_ip_rank(min_rank_ip)
         if min_rank_ip:
-            self.del_conn(min_rank_ip)
+            self.del_src_conn(min_rank_ip)
             return min_rank_ip
         else:
             return None
