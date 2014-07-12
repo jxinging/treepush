@@ -1,473 +1,15 @@
 #!/usr/bin/env python2
 # coding: utf8
 
-
-# 层级推送文件脚本, by jinxing
-# 131109, 第一版
-# 131112, 改判断返回源IP的方式，根据IP地址的距离及源IP的可用连接数计算 rank 值
-# 131113, 增加执行期间的指令支持, 可通过 stdin 输入指令
-
 __author__ = 'JinXing'
-
-import sys
-import os
-import time
-import subprocess
-import logging
-import socket
-import struct
-import select
-import tempfile
-from multiprocessing import Lock
-
 __VERSION__ = 0.2
 
-### 全局变量
-# 同一台源机器最大并发连接数
-DEFAULT_MAX_CONN = 4
-
-LOG_SUCCESS = logging.ERROR+1
-LOG_FAIL = logging.ERROR+2
-
-G_LOGGER = None
-G_POOL = None
-G_OPTIONS = None
-G_LOG_DIR = 'logs'
-G_SSH_MASTER_LOCK = None
-
-
-class HostPool(object):
-    def __init__(self, max_conn, *ip_list):
-        self.pool = {}
-        self.max_conn = max_conn
-        for ip in ip_list:
-            self.pool[ip] = {'ip': ip, 'conn': max_conn}     # conn表示可接受的连接数
-            G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
-
-    def __len__(self):
-        return len(self.pool)
-
-    def _print(self):
-        for ip in self.pool:
-            print ip, self.pool[ip]['conn']
-
-    def has_ip(self, _ip):
-        return str(_ip) in self.pool
-
-    def get_ip(self, target_ip=None):
-        return self._get_source_ip(target_ip)
-
-        # for i in xrange(self.max_conn/2, 0, -1):  # 尽量选择可用连接数多的源IP
-        #     source_ip = self._do_get_ip(target_ip, i)
-        #     if source_ip:
-        #         return source_ip
-
-    def _get_source_ip(self, target_ip=None, min_conn=1):
-        """target_ip, 目标机器的IP(用于搜索同一段的源IP)
-        min_conn, 最少可用连接
-        """
-        logging.debug('_get_source_ip(%s, %s)', target_ip, min_conn)
-        free_ip_list = [x['ip'] for x in self.pool.itervalues() if x['conn'] >= min_conn]
-        if len(free_ip_list) == 0:
-            return None
-        if target_ip is None:
-            self.del_conn(free_ip_list[0])
-            return free_ip_list[0]
-
-        def get_rank(ip):
-            int_ip = ip2long(ip)
-            distance = abs(target_ip_int-int_ip)
-            if ip in self.pool:
-                available_conn = self.pool[ip]['conn']
-            else:
-                available_conn = 0
-            rank = distance + (available_conn-self.max_conn)
-            return rank
-
-        # 指定了 target_ip, 下面尝试获取一个IP段相近的IP
-        target_ip_int = ip2long(target_ip)
-        min_rank_ip = None
-        min_rank = get_rank('255.255.255.255')
-        for ip in free_ip_list:
-            if get_rank(ip) < min_rank:
-                min_rank_ip = ip
-                min_rank = get_rank(min_rank_ip)
-        if min_rank_ip:
-            self.del_conn(min_rank_ip)
-            return min_rank_ip
-        else:
-            return None
-
-    def add_ip(self, ip):
-        if ip in self.pool:
-            return None
-        self.pool[ip] = {'ip': ip, 'conn': self.max_conn}
-        G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
-        return ip
-
-    def _del_ip(self, ip):
-        if ip in self.pool:
-            self.pool.pop(ip)
-            G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
-
-    def add_conn(self, ip, num=1):
-        if ip not in self.pool:
-            G_LOGGER.debug('%s pool中不存在 add_conn()', ip)
-            return
-        if self.pool[ip]['conn'] >= self.max_conn:
-            G_LOGGER.debug('%s 可用连接已达最大值 add_conn()', ip)
-            return
-
-        self.pool[ip]['conn'] += num
-        G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
-        return self.pool[ip]['conn']
-
-    def del_conn(self, ip, num=1):
-        if ip not in self.pool:
-            G_LOGGER.debug('del_conn(), pool中不存在 %s', ip)
-            return
-        if self.pool[ip]['conn'] <= 0:
-            G_LOGGER.debug('%s 无可用连接 add_conn()', ip)
-            return
-
-        # print self.pool[ip]['conn'], num
-        self.pool[ip]['conn'] -= num
-        G_LOGGER.debug("%s 可用连接: %s", self.pool[ip]['ip'], self.pool[ip]['conn'])
-        return self.pool[ip]['conn']
-
-
-class CommandSession(object):
-    def __init__(self, from_ip, to_ip, p, logfile):
-        self.from_ip = from_ip
-        self.to_ip = to_ip
-        self.ssh_process = p
-        self.logfile = logfile
-
-    def __str__(self):
-        return "%s -> %s" % (self.from_ip, self.to_ip)
-
-
-class TPushManager(object):
-    def __init__(self, _host_list, run_cmd):
-        # optlist: [server_name, server_ip, server_sshport]
-        self.host_info_list = _host_list
-        self.target_list = [x[1] for x in optlist]
-        self.target_list = list(set(self.target_list))    # 去除重复IP
-
-        self.total_nodes = len(self.target_list)
-        self.retry_count = {}
-        self.max_retry = G_OPTIONS.retry
-        self.run_cmd = run_cmd
-        self.running_list = []
-        self.done_list = []
-        self.error_list = []
-        self.session_list = []
-
-        self.is_active = False
-
-        ## 下面对要操作的IP进行重排，在不同的IP段选择一个IP移到列表前面
-        ## 扩大第一轮更新时的目标机器网段范围, 下一轮更新就会有更大的几率选择到在同一段的源IP
-        subnet_list = list()
-        for ip in self.target_list[:]:
-            subnet = get_subnet(ip)
-            if subnet not in subnet_list:
-                subnet_list.append(subnet)
-                self.target_list.remove(ip)
-                self.target_list.insert(0, ip)
-
-    def __str__(self):
-        info = list()
-        info.append("source:%s, total:%s, done:%s, error:%s, running:%s, pending:%s" % (
-            len(G_POOL), self.total_node, len(self.done_list),
-            len(self.error_list), len(self.session_list), len(self.target_list)
-        ))
-
-        #if len(self.target_list) <= len(self.optlist)/10 and \
-        #   len(self.session_list) <= len(self.optlist)/10:
-        #    if len(self.target_list) > 0:
-        #        info.append("pending hosts: ")
-        #        for ip in self.target_list:
-        #            info.append(str(ip))
-        #    if len(self.session_list) > 0:
-        #        info.append("running sessions: ")
-        #        for s in self.session_list:
-        #            info.append(str(s))
-
-        return '\n'.join(info)
-
-    def main_loop(self, interval=0.1):
-        self.is_active = True
-        while self.is_active:
-            self.wait_command(timeout=0.1)
-            if self.do_loop() == -1:
-                self.is_active = False
-                break
-            time.sleep(interval)
-            #self.smart_reconnect()
-
-    def smart_reconnect(self):
-        source_ip_subnet_list = [x['ip'] for x in G_POOL.pool.itervalues() if x['conn'] >= 2]
-        for session in self.session_list[:]:
-            to_ip_subnet = get_subnet(session.to_ip)
-            if get_subnet(session.from_ip) != to_ip_subnet and to_ip_subnet in source_ip_subnet_list:
-                G_LOGGER.info('smart_reconnect %s -> %s', session.from_ip, session.to_ip)
-                if session.ssh_process.poll() is None:  # 如果进程没有结束就发送 terminate 信号
-                    session.ssh_process.terminate()     # 这里不能用 kill(), kill() 会使进程直接退出, 导致没有清理 control socket
-                    session.ssh_process.wait()
-
-                self.session_list.remove(session)
-                self.running_list.remove(session.to_ip)
-                self.target_list.append(session.to_ip)
-                G_POOL.add_conn(session.from_ip)
-
-    def wait_command(self, timeout=0.01):
-        r, w, _ = select.select([sys.stdin], [], [], timeout)
-        if len(r) == 0:
-            return
-        input_str_list = sys.stdin.readline().strip().split()
-        if len(input_str_list) == 0:
-            input_str_list = ['help']
-
-        if len(input_str_list) == 1:
-            cmd = input_str_list[0]
-            args = ['']
-        else:
-            cmd, args = input_str_list[0], input_str_list[1:]
-        G_LOGGER.info("*** run command [%s]", cmd)
-        method_name = "do_cmd_"+cmd
-        if not hasattr(self, method_name):
-            G_LOGGER.error("command [%s] not defined", cmd)
-            cmd = "help"
-            method_name = "do_cmd_help"
-
-        getattr(self, method_name)(cmd, args)
-        # G_LOGGER.info('*** command [%s] done', cmd)
-
-    @staticmethod
-    def do_cmd_help(_, _):
-        print u"""支持的命令:
-help                        显示此帮助
-show                        显示运行进度信息
-reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队列
-"""
-
-    def do_cmd_show(self, *_):
-        info = []
-        if len(self.target_list) > 0:
-            info.append("pending hosts: ")
-            for ip in self.target_list:
-                info.append(str(ip))
-        if len(self.session_list) > 0:
-            info.append("running sessions: ")
-            for s in self.session_list:
-                info.append(str(s))
-        print '\n'.join(info)
-
-    def do_cmd_reconnect(self, _, args):
-        if not args:
-            args = ['slow']
-        conn_type = args[0]
-        if conn_type == 'slow':
-            reconnect_session_list = []
-            for session in self.session_list:
-                if get_subnet(session.from_ip) != get_subnet(session.to_ip):
-                    reconnect_session_list.append(session)
-        elif conn_type == 'all':
-            reconnect_session_list = self.session_list[:]
-        else:
-            G_LOGGER.error(u"unknown reconnect args [%s]", type)
-            return
-        if not reconnect_session_list:
-            return
-        for session in reconnect_session_list:
-            if session.ssh_process.poll() is None:  # 如果进程没有结束就发送 terminate 信号
-                # 这里不能发送 kill 信号, kill 会使进程直接退出, 不会清理 control socket 文件
-                session.ssh_process.terminate()
-
-        for session in reconnect_session_list[:]:
-            if session.ssh_process.poll() is None:  # 等待进程结束
-                session.ssh_process.wait()
-            self.session_list.remove(session)
-            self.running_list.remove(session.to_ip)
-            self.target_list.append(session.to_ip)
-            G_POOL.add_conn(session.from_ip)
-
-    def do_loop(self):
-        show_info = False
-        for to_ip in self.target_list[:]:
-            s_ip = G_POOL.get_ip(to_ip)
-            logfile = "%s/%s_from_%s.log" % (G_LOG_DIR, to_ip, s_ip)
-            if s_ip is None:
-                G_LOGGER.debug('源IP池中没有可用IP')
-                break
-            try:
-                G_SSH_MASTER_LOCK.acquire()
-                sshport = get_sshport_by_ip(s_ip)
-                ssh_process = subprocess_ssh(s_ip, self.run_cmd, port=sshport, logfile=logfile,
-                                                env={
-                                                    "TPUSH_TO_IP": to_ip,
-                                                    "TPUSH_FROM_IP": s_ip,
-                                                    "TPUSH_TO_SSHPORT": sshport
-                                                })
-            except Exception, _:
-                logging.log(LOG_FAIL, "start cmd error, source_ip: %s, target_ip: %s", s_ip, to_ip, exc_info=True)
-                G_POOL.add_conn(s_ip)   # 调用 get_ip() 时连接数自动减1，所以这里要加回去
-                self.error_list.append(to_ip)
-                continue
-            finally:
-                G_SSH_MASTER_LOCK.release()
-
-            self.target_list.remove(to_ip)
-            G_LOGGER.info('### [RUN] %s -> %s', s_ip, to_ip)
-            show_info = True
-            self.running_list.append(to_ip)
-            session = CommandSession(s_ip, to_ip, ssh_process, logfile)
-            self.session_list.append(session)
-
-        for session in self.session_list[:]:
-            if session.ssh_process.poll() is not None:
-                self.session_list.remove(session)
-                self.running_list.remove(session.to_ip)
-                if session.ssh_process.returncode != 0:
-                    if session.to_ip not in self.retry_count:
-                        self.retry_count[session.to_ip] = 0
-                    if self.retry_count[session.to_ip] >= self.max_retry:
-                        G_LOGGER.log(LOG_FAIL, '### [ERROR] %s -> %s, tail log: %s\n%s',
-                                        session.from_ip, session.to_ip, session.logfile,
-                                        '\n'.join(open(session.logfile).readlines()[-2:]))
-                        show_info = True
-                        self.error_list.append(session.to_ip)
-                    else:
-                        self.retry_count[session.to_ip] += 1
-                        G_LOGGER.info('### [RETRY]#%s %s, tail log: %s\n%s', self.retry_count[session.to_ip],
-                                        session.to_ip, session.logfile,
-                                        '\n'.join(open(session.logfile).readlines()[-2:]))
-                        self.target_list.append(session.to_ip)
-                    G_POOL.add_conn(session.from_ip)
-                else:
-                    G_LOGGER.log(LOG_SUCCESS, '### [DONE] %s -> %s', session.from_ip, session.to_ip)
-                    show_info = True
-                    self.done_list.append(session.to_ip)
-                    G_POOL.add_conn(session.from_ip)
-                    if not G_POOL.has_ip(session.to_ip):
-                        G_POOL.add_ip(session.to_ip)    # 添加新的IP到更新源池
-
-        if show_info:
-            G_LOGGER.info(str(self))
-
-        if len(self.target_list) == 0 and len(self.running_list) == 0:
-            G_LOGGER.info('#### 操作结束')
-            return False
-        
-        return True
-
-    def finish(self):
-        G_LOGGER.info('结束操作中...')
-        for session in self.session_list:
-            if session.ssh_process.poll() is None:  # 如果进程没有结束就发送 terminate 信号
-                # 这里不能发送 kill 信号, kill 会使进程直接退出, 不会清理 control socket 文件
-                session.ssh_process.terminate()
-
-        for session in self.session_list[:]:
-            if session.ssh_process.poll() is None:  # 等待进程结束
-                session.ssh_process.wait()
-
-            self.session_list.remove(session)
-            self.running_list.remove(session.to_ip)
-            if session.ssh_process.returncode != 0:
-                G_LOGGER.log(LOG_FAIL, '### [ERROR] %s -> %s', session.from_ip, session.to_ip)
-                self.error_list.append(session.to_ip)
-            else:
-                G_LOGGER.log(LOG_SUCCESS, '### [DONE] %s -> %s', session.from_ip, session.to_ip)
-                self.done_list.append(session.to_ip)
-
-        print '################## 成功列表(%s) ##################' % len(self.done_list)
-        print ' '.join(self.done_list)
-        print '################## 失败列表(%s) ##################' % len(self.error_list)
-        print ' '.join(self.error_list)
-        print '################## 未处理列表(%s) ##################' % len(self.target_list)
-        print ' '.join(self.target_list)
-
-
-def subprocess_ssh(host, cmd, env=None, logfile=None, _port=22):
-    port = int(_port)
-    ssh_control_dir = os.path.join(tempfile.gettempdir(), '.dsync_ssh_control')
-
-    if not os.path.exists(ssh_control_dir):
-        os.mkdir(ssh_control_dir)
-    ssh_control_socket_file = os.path.join(ssh_control_dir, '%s_%d.sock' % (host, port))
-
-    ssh_args = []
-    if not os.path.exists(ssh_control_socket_file):
-        ssh_args.append('-M')
-    ssh_args.extend(['-o', 'ControlPath="%s"' % ssh_control_socket_file])
-    ssh_args.extend(['-p', str(port)])
-    ssh_args.extend(['-A', '-T'])
-    ssh_args.extend(['-o', 'StrictHostKeyChecking=no',
-                    '-o', 'UserKnownHostsFile=/dev/null',
-                    '-o', 'ConnectTimeout=4'])
-    ssh_args.append(host)
-    if env:
-        for name, value in env.items():
-            ssh_args.append("export %s=%s;" % (name, value))
-    ssh_args.append("echo '%s:%s ssh connection success';" % (host, port))  # 用于判断连接在哪一层被断开
-    ssh_args.append("sleep $((RANDOM%10+5));")  # 如果命令执行过快会出错(连接过快，被拒绝), 这里添加一个随机延时
-    ssh_args.append(cmd)
-
-    if logfile is not None:
-        r_stdout = open(logfile, 'ab')
-    else:
-        r_stdout = subprocess.PIPE
-    r_stdout.write('ssh '+' '.join(ssh_args)+'\n')
-    p = subprocess.Popen(['/usr/bin/ssh']+ssh_args, shell=False, close_fds=True,
-                         stdin=subprocess.PIPE, stdout=r_stdout, stderr=subprocess.STDOUT)
-    return p
-
-
-def get_optlist_by_listfile(list_file):
-    optlist = []
-    fp = open(list_file, 'rb')
-    for server in fp:
-        if server.find('#') >= 0:
-            continue    # 注释行
-        t_list = map(lambda x: x.strip(""""'"""), server.split())
-        server_name = t_list[5]
-        server_ip = t_list[7]
-        server_sshport = t_list[6]
-        optlist.append((server_name, server_ip, server_sshport))
-    return optlist
-
-
-def create_listfile_by_optlist():
-    raise
-
-
-def ip2long(ip_string):
-    return struct.unpack('!I',socket.inet_aton(ip_string))[0]
-
-
-def long2ip(ip_int):
-    return socket.inet_ntoa(struct.pack('!I', ip_int))
-
-
-def get_subnet(ip):
-    ip_split = ip.split('.')
-    if len(ip_split) != 4:
-        raise ValueError(u"Invalid ip address %s" % ip)
-    subnet = '.'.join(ip_split[:3])    # 以IP的前3段做为网段
-    return subnet
-
-
-def get_sshport_by_ip(ip):
-    if ip in G_OPTIONS.sshport_map:
-        return int(G_OPTIONS.sshport_map[ip])
-    else:
-        return 22
-
-
-class Logger(object):
-    pass
-
+import sys
+import time
+from sourcepool import SourcePool
+from manager import TPushManager
+from helper import *
+from globals import *
 
 EPILOG = (
 "TIPS:\n"
@@ -476,19 +18,13 @@ EPILOG = (
 "3. scp 命令参考: scp -o StrictHostKeyChecking=no\n"
 "4. 执行过程中可输入命令进行交互控制, 输入 help 查看帮助\n"
 "5. 完整的调用命令参考:\n"
-"""python dsync.py 'rsync -avz -e "ssh -o StrictHostKeyChecking=no -p $TPUSH_TO_SSHPORT" """
-"""/data/datafile $TPUSH_TO_IP:/data/datafile' -r 3 -m 4 -s 1.1.1.1 -l iplist.txt\n"""
-"""python dsync.py 'cd /data/rsync/ && sh push_files_to_remote_rsync_dir.sh """
-"""$TPUSH_TO_IP $TPUSH_TO_SSHPORT >/dev/null' -r 3 -m 4 -s 1.1.1.1 -l iplist.txt\n"""
+"""python treepush.py 'rsync -avz -e "ssh -o StrictHostKeyChecking=no -p $TPUSH_TO_SSHPORT" """
+"""/data/datafile $TPUSH_TO_IP:/data/datafile' -r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n"""
+"""python treepush.py 'cd /data/rsync/ && sh push_files_to_remote_rsync_dir.sh """
+"""$TPUSH_TO_IP $TPUSH_TO_SSHPORT >/dev/null' -r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n"""
 )
 
 if __name__ == '__main__':
-    log_format = '%(asctime)s [%(levelname)s] # %(message)s'
-    logging.basicConfig(format=log_format, datefmt='%m/%d %H:%M:%S')
-    logging.addLevelName(LOG_SUCCESS, "\033[1;32mSUCCESS\033[0m")
-    logging.addLevelName(LOG_FAIL, "\033[5;31mFAIL\033[0m")
-    G_LOGGER = logging.getLogger()
-
     from optparse import OptionParser
     OptionParser.format_epilog = lambda self, epilog: self.epilog   # 重写 format_epilog(), 默认的方法会自动去掉换行
     parser = OptionParser(usage=u"Usage: %prog -l <listfile> -s <source_hosts> [-r|-m|-d] cmd",
@@ -497,7 +33,7 @@ if __name__ == '__main__':
     parser.add_option('-d', '--debug', action='store_true', dest='debug', default=False,
                             help=u'开启 debug')
     parser.add_option('-l', '--list', dest='listfile',
-                            help=u'目标服务器列表(gatfile format)')
+                            help=u'目标服务器列表')
     parser.add_option('-s', '--source', dest='source',
                             help=u'版本源机器列表(1.1.1.1,2.2.2.2)')
     parser.add_option('-m', '--max', dest='max_conn', type='int', default=DEFAULT_MAX_CONN,
@@ -527,7 +63,7 @@ if __name__ == '__main__':
         sys.exit(127)
 
     G_OPTIONS = options
-    G_OPTIONS.source_ip_list = []
+    G_OPTIONS.source_ips = []
     G_OPTIONS.sshport_map = {}
     for host in options.source.split(','):
         if host.find('@') >= 0:
@@ -536,10 +72,10 @@ if __name__ == '__main__':
             ip, port = host.split(':', 1)
         else:
             ip, port = host, 22
-        G_OPTIONS.source_ip_list.append(ip)
+        G_OPTIONS.source_ips.append(ip)
         G_OPTIONS.sshport_map[ip] = port
 
-    run_cmd = ' '.join(other_args)
+    command = ' '.join(other_args)
 
     if G_OPTIONS.debug:
         G_LOGGER.setLevel(logging.DEBUG)
@@ -550,14 +86,13 @@ if __name__ == '__main__':
         os.rename(G_LOG_DIR, "%s.%d" % (G_LOG_DIR, int(time.time())))
     os.mkdir(G_LOG_DIR)
 
-    optlist = get_optlist_by_listfile(G_OPTIONS.listfile)
+    dst_optlist = get_optlist_by_listfile(G_OPTIONS.listfile)
 
-    for opt_host in optlist[:]:
-        G_OPTIONS.sshport_map[opt_host[1]] = opt_host[2]
+    for dst_host in dst_optlist[:]:
+        G_OPTIONS.sshport_map[dst_host[1]] = dst_host[2]
 
-    G_POOL = HostPool(G_OPTIONS.max_conn, *G_OPTIONS.source_ip_list)
-    mgr = TPushManager(optlist, run_cmd)
-    G_SSH_MASTER_LOCK = Lock()  # 启动 ssh Master 时的锁， 防止同一IP启动多个 ssh Master
+    src_pool = SourcePool(G_OPTIONS.max_conn, G_OPTIONS.source_ips)
+    mgr = TPushManager(src_pool, command, [x[0] for x in dst_optlist])
     try:
         mgr.main_loop(0.1)
     except KeyboardInterrupt, e:
