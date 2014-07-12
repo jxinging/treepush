@@ -22,7 +22,7 @@ EPILOG = (
 """/data/datafile $TPUSH_TO_IP:/data/datafile' -r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n"""
 """python treepush.py 'cd /data/rsync/ && sh push_files_to_remote_rsync_dir.sh """
 """$TPUSH_TO_IP $TPUSH_TO_SSHPORT >/dev/null' -r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n"""
-)
+).decode("utf8")
 
 if __name__ == '__main__':
     from optparse import OptionParser

@@ -51,10 +51,10 @@ def get_optlist_by_listfile(list_file):
     for server in fp:
         if server.find('#') >= 0:
             continue    # 注释行
-        t_list = map(lambda x: x.strip(""""'"""), server.split())
-        server_name = t_list[5]
-        server_ip = t_list[7]
-        server_sshport = t_list[6]
+        t_list = map(lambda x: x.strip("\"'"), server.split())
+        server_name = t_list[0]
+        server_ip = t_list[1]
+        server_sshport = t_list[2]
         optlist.append((server_name, server_ip, server_sshport))
     return optlist
 
