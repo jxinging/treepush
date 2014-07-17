@@ -7,20 +7,27 @@ import sys
 from multiprocessing import Lock
 
 from connection import Connection
-from globals import *
 from helper import *
+
+
+class FailPopen(object):
+    """Popen() 调用失败返回的 Popen 对象。方便代码统一处理"""
+    is_fail_popen = True
+    returncode = 1  # 总是返回失败
+    _poll_return = True
+
+    def poll(self):
+        return self._poll_return
 
 
 class TPushManager(object):
     def __init__(self, src_pool, dst_hosts, command, options):
-        # optlist: [server_name, server_ip, server_sshport]
         self.src_pool = src_pool
         self.dst_hosts = dst_hosts
         self.command = command
         self.options = options
 
         self.max_retry = options.retry
-        self.sshport_map = options.sshport_map
         self.all_dst_hosts = dst_hosts
         self.src_ips = self.src_pool.src_ips()
         self.total_dsts = len(dst_hosts)
@@ -33,6 +40,7 @@ class TPushManager(object):
 
         self.is_active = False
         self.ssh_master_lock = Lock()
+        self._fail_popen = FailPopen()
 
         ## 下面对要操作的IP进行重排，在不同的IP段选择一个IP移到列表前面
         ## 扩大第一轮更新时的目标机器网段范围, 下一轮更新就会有更大的几率选择到在同一段的源IP
@@ -60,26 +68,33 @@ class TPushManager(object):
             #self.smart_reconnect()
 
     def run_loop(self):
-        show_info = False
+        show_info = False   # 循环最后是否显示当前运行信息
         for dst_ip in self.dst_hosts[:]:
+            if self.src_pool.has_ip(dst_ip):
+                self.dst_hosts.remove(dst_ip)
+                continue
+
             src_ip = self.src_pool.get_src(dst_ip)
             logfile = "%s/%s_from_%s.log" % (self.options.logdir, dst_ip, src_ip)
             if src_ip is None:
-                logger.debug('源IP池中没有可用IP')
+                logger.debug(u'源IP池中没有可用IP')
                 break
 
             try:
-                self.ssh_master_lock.acquire()
-                sshport = self.get_sshport_by_ip(src_ip)
-                env = {"TPUSH_SRC": src_ip, "TPUSH_DEST": dst_ip, "TPUSH_DEST_PORT": sshport}
-                ssh_process = subprocess_ssh(src_ip, self.command, port=sshport, logfile=logfile, env=env)
+                src_host_port = self.get_port_by_ip(src_ip)
+                src_host_user = self.get_user_by_ip(src_ip)
+                env = self.get_env_dict(dst_ip)
+                env["TPUSH_SRC"] = src_ip
+                # self.ssh_master_lock.acquire()
+                ssh_process = subprocess_ssh(src_ip, self.command, env=env, logfile=logfile,
+                                             user=src_host_user, port=src_host_port)
             except Exception, _:
                 logger.fail("start cmd error, source_ip: %s, target_ip: %s", src_ip, dst_ip, exc_info=True)
-                ssh_process = fail_popen
+                ssh_process = self._fail_popen
             else:
                 logger.info('### [RUN] %s -> %s', src_ip, dst_ip)
-            finally:
-                self.ssh_master_lock.release()
+            # finally:
+            #     self.ssh_master_lock.release()
 
             self.dst_hosts.remove(dst_ip)
             show_info = True
@@ -87,7 +102,6 @@ class TPushManager(object):
             conn = Connection(src_ip, dst_ip, ssh_process, logfile)
             self.connections.append(conn)
 
-        logger.info("%s", "\n".join(str(x.ssh_process.poll()) for x in self.connections))
         for conn in [x for x in self.connections if x.ssh_process.poll() is not None]:
             self.connections.remove(conn)
             self.running_hosts.remove(conn.dst_ip)
@@ -96,18 +110,17 @@ class TPushManager(object):
                 if conn.dst_ip not in self.retry_count:
                     self.retry_count[conn.dst_ip] = 0
                 if self.retry_count[conn.dst_ip] >= self.max_retry:
-                    logger.fail('### [ERROR] %s -> %s, tail log: %s\n%s',
-                                    conn.src_ip, conn.dst_ip, conn.logfile,
-                                    '\n'.join(open(conn.logfile).readlines()[-2:]))
+                    logger.fail('### [ERROR](code:%d) %s -> %s, tail log:\n%s',
+                                    conn.ssh_process.returncode, conn.src_ip, conn.dst_ip, tail_lines(conn.logfile, 2))
                     show_info = True
                     self.error_hosts.append(conn.dst_ip)
                 else:
                     self.retry_count[conn.dst_ip] += 1
-                    logger.info('### [RETRY]#%s %s, tail log: %s\n%s', self.retry_count[conn.dst_ip],
-                                    conn.dst_ip, conn.logfile, '\n'.join(open(conn.logfile).readlines()[-2:]))
+                    logger.info('### [RETRY](code:%d) %s -> %s, retry:%d, tail log:\n%s', conn.ssh_process.returncode,
+                                 conn.src_ip, conn.dst_ip, self.retry_count[conn.dst_ip],  tail_lines(conn.logfile, 2))
                     self.dst_hosts.append(conn.dst_ip)
             else:
-                logger.success('### [DONE] %s -> %s', conn.src_ip, conn.dst_ip)
+                logger.success('### [DONE] %s -> %s: %s', conn.src_ip, conn.dst_ip,  tail_lines(conn.logfile))
                 show_info = True
                 self.done_hosts.append(conn.dst_ip)
                 if not self.src_pool.has_ip(conn.dst_ip):
@@ -117,7 +130,6 @@ class TPushManager(object):
             logger.info(str(self))
 
         if len(self.dst_hosts) == 0 and len(self.running_hosts) == 0:
-            logger.info('#### 操作结束')
             return False
 
         return True
@@ -209,14 +221,14 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
             self.src_pool.add_src_conn(conn.src_ip)
 
     def finish(self):
-        logger.info('结束操作中...')
+        logger.info('等待所有结点结束...')
         for conn in self.connections:
             if conn.ssh_process.poll() is None:  # 如果进程没有结束就发送 terminate 信号
                 # 这里不能发送 kill 信号, kill 会使进程直接退出, 不会清理 control socket 文件
                 conn.ssh_process.terminate()
 
         for conn in self.connections[:]:
-            if conn.ssh_process.poll() is None:  # 等待进程结束
+            if conn.ssh_process.poll() is None:  # 等待进程退出
                 conn.ssh_process.wait()
 
             self.connections.remove(conn)
@@ -232,8 +244,18 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
         print ' '.join(self.done_hosts)
         print '################## 失败列表(%s) ##################' % len(self.error_hosts)
         print ' '.join(self.error_hosts)
-        print '################## 未处理列表(%s) ##################' % len(self.dst_hosts)
+        print '################# 未处理列表(%s) #################' % len(self.dst_hosts)
         print ' '.join(self.dst_hosts)
 
-    def get_sshport_by_ip(self, ip):
-        return self.sshport_map.get(ip, 22)
+    def get_port_by_ip(self, ip):
+        if ip not in self.options.host_info:
+            return None
+        return self.options.host_info[ip].get("port", None)
+
+    def get_user_by_ip(self, ip):
+        if ip not in self.options.host_info:
+            return None
+        return self.options.host_info[ip].get("user", None)
+
+    def get_env_dict(self, ip):
+        return dict( ("TPUSH_%s" % k.upper(), v) for k,v in self.options.host_info[ip].items())
