@@ -66,7 +66,7 @@ EPILOG = ("\n"
 """-r 3 -m 4 -s 1.1.1.1 -l dest_hosts.txt\n\n"""
 ).decode("utf8")
 
-if __name__ == '__main__':
+def main():
     from optparse import OptionParser
     OptionParser.format_epilog = lambda self, epilog: self.epilog   # 重写 format_epilog(), 默认的方法会自动去掉换行
     parser = OptionParser(usage=u"Usage: %prog -l <listfile> -s <source_hosts> [-r|-m|-d] cmd",
@@ -111,7 +111,6 @@ if __name__ == '__main__':
         parser.print_help()
         sys.exit(127)
 
-    G_OPTIONS = options
     options.source_ips = []
     options.port_map = {}
     for host in options.source.split(','):
@@ -144,8 +143,10 @@ if __name__ == '__main__':
     mgr = TPushManager(src_pool, host_info_dict.keys(), command, options)
     try:
         mgr.main_loop(0.1)
-    except KeyboardInterrupt, e:
+    except KeyboardInterrupt, _:
         logger.fail('#### 操作被中断')
-
     finally:
         mgr.finish()
+
+if __name__ == '__main__':
+    main()
