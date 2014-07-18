@@ -96,48 +96,9 @@ logger = logging.getLogger("TPush")
 logger.setLevel(logging.INFO)
 
 
-def _get_format_dict(format_str):
-    format_d = dict()
-    num = 0
-    for s in format_str.split(","):
-        ss = s.split(":")
-        if len(ss) == 1:
-            name = ss[0]
-            num += 1
-        elif len(ss) == 2 and ss[0].isdigit():
-            name = ss[1]
-            num = int(ss[0])
-        else:
-            raise ValueError(u"Invalid format: %s", s)
-        if len(name) == 0:
-            continue
-        assert name not in format_d
-        format_d[name] = num-1
-    return format_d
-
-
-def parse_listfile(list_file, format_str):
-    format_dict = _get_format_dict(format_str)
-    env_dict = dict()
-    with open(list_file, 'rb') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            td = dict()
-            sl = line.split()
-            for name, num in format_dict.iteritems():
-                if sl[num].isdigit():
-                    td[name] = int(sl[num])
-                else:
-                    td[name] = sl[num]
-            host = sl[format_dict["host"]]
-            env_dict[host] = td
-    return env_dict
-
-
 def tail_lines(filename, n=1, strip=True):
-    with(open(filename, "r")) as f:
+    try:
+        f = (open(filename, "r"))
         r = []
         for line in f:
             if strip and not line.strip():
@@ -145,6 +106,9 @@ def tail_lines(filename, n=1, strip=True):
             if len(r) >= n:
                 r.pop(0)
             r.append(line)
+    finally:
+        if f and not f.closed:
+            f.close()
     return "".join(r)
 
 if __name__ == "__main__":

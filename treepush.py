@@ -5,11 +5,53 @@ __author__ = 'JinXing'
 __VERSION__ = 0.2
 
 import sys
-import time
 from sourcepool import SourcePool
 from manager import TPushManager
 from helper import *
-from globals import *
+
+
+def _get_format_dict(format_str):
+    format_d = dict()
+    num = 0
+    for s in format_str.split(","):
+        ss = s.split(":")
+        if len(ss) == 1:
+            name = ss[0]
+            num += 1
+        elif len(ss) == 2 and ss[0].isdigit():
+            name = ss[1]
+            num = int(ss[0])
+        else:
+            raise ValueError(u"Invalid format: %s", s)
+        if len(name) == 0:
+            continue
+        assert name not in format_d
+        format_d[name] = num-1
+    return format_d
+
+
+def parse_listfile(list_file, format_str):
+    format_dict = _get_format_dict(format_str)
+    env_dict = dict()
+    try:
+        f = open(list_file, 'rb')
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            td = dict()
+            sl = line.split()
+            for name, num in format_dict.iteritems():
+                if sl[num].isdigit():
+                    td[name] = int(sl[num])
+                else:
+                    td[name] = sl[num]
+            host = sl[format_dict["host"]]
+            env_dict[host] = td
+    finally:
+        if f and not f.closed:
+            f.close()
+    return env_dict
 
 EPILOG = ("\n"
 "TIPS:\n"
@@ -19,9 +61,9 @@ EPILOG = ("\n"
 "4. 执行过程中可输入命令进行交互控制, 输入 help 查看帮助\n"
 "5. 完整的调用命令参考:\n"
 """treepush 'rsync -avz -e "ssh -o StrictHostKeyChecking=no -p $TPUSH_PORT" """
-"""/data/datafile TPUSH_HOST:/data/datafile' -r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n"""
+"""/data/datafile TPUSH_HOST:/data/datafile' -r 3 -m 4 -s 1.1.1.1 -l dest_hosts.txt\n"""
 """treepush 'ssh -o StrictHostKeyChecking=no -p $TPUSH_PORT root@TPUSH_HOST "ip addr show"' """
-"""-r 3 -m 4 -s 1.1.1.1 -l dst_hosts.txt\n\n"""
+"""-r 3 -m 4 -s 1.1.1.1 -l dest_hosts.txt\n\n"""
 ).decode("utf8")
 
 if __name__ == '__main__':
