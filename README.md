@@ -17,6 +17,7 @@ TreePush
 - 随着源节点的增加，更新过程会越来越快，实现更新速度的指数级增涨
 - 使用自定义的文件推送指令，可基于 scp、rsync 进行文件的推送
 - 不需要在所有节点上部署，只需要任意找一台作为控制机安装即可
+- 部署简单，仅依赖 ssh(需有开启 ssh 自动密钥认证)
 
 ## 使用示例
 
@@ -36,12 +37,11 @@ treepush 'rsync -avz -e "ssh -o StrictHostKeyChecking=no -p $TPUSH_PORT" /data/d
 # 使用 scp 推送文件
 treepush 'scp -o StrictHostKeyChecking=no -P $TPUSH_PORT /data/datafile $TPUSH_USER@$TPUSH_HOST:/data/datafile' -s 127.0.0.1 -l hosts.txt
 
-# 指定重试次数(-r)和一个源节点的并发连接数(-m)
+# 指定重试次数(-r)和每个源节点的并发连接数(-m)
 treepush 'scp -o StrictHostKeyChecking=no -P $TPUSH_PORT /data/datafile $TPUSH_USER@$TPUSH_HOST:/data/datafile' -s 127.0.0.1 -l hosts.txt -r 3 -m 4
-
 ```
 
-### 各选项的说明:
+**各选项的说明:**
 ```text
   -h, --help            show this help message and exit
   -d, --debug           开启 debug
