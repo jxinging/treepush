@@ -33,6 +33,7 @@ def _get_format_dict(format_str):
 def parse_listfile(list_file, format_str):
     format_dict = _get_format_dict(format_str)
     env_dict = dict()
+    f = None
     try:
         f = open(list_file, 'rb')
         for line in f:
