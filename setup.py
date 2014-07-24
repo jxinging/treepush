@@ -9,6 +9,6 @@ setup(
     install_requires=[],
     entry_points="""
     [console_scripts]
-    treepush = treepush.treepush:main
+    treepush = treepush:main
     """
 )
