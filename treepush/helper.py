@@ -17,6 +17,7 @@ def subprocess_ssh(host, cmd, env=None, logfile=None, user=None, port=None):
 
     ssh_args = []
     if not os.path.exists(ssh_control_socket_file):
+        open(ssh_control_socket_file, "a").close()  # create file
         ssh_args.append('-M')
     if port is not None:
         ssh_args.extend(['-p', str(port)])
