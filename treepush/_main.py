@@ -77,8 +77,8 @@ def main():
                             help=u'目标服务器列表')
     parser.add_option('-f', '--format', dest='format', default='host,port,user',
                             help=(
-                                u'指定列表文件各字段的名字，使用 "," 分隔字段名, 连接多个逗号可用于跳过字段'
-                                u'指定的字段名会被变成全大写并加上 "TPUSH_"前缀添加到环境变量中。'
+                                u'为列表文件各字段命名，使用 "," 分隔, 可使用连续多个逗号跳过字段。'
+                                u'字段名会被改成全大写并加上 "TPUSH_" 前缀添加到环境变量中。'
                                 u'字段名支持使用 "#:<name>" 直接指定第#个字段对应的名字。'
                                 u'(host,port,user 这三个字段固定对应: 主机,端口,用户名)'))
     parser.add_option('-s', '--source', dest='source',
