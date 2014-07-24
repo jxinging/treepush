@@ -64,4 +64,4 @@ treepush 'scp -o StrictHostKeyChecking=no -P $TPUSH_PORT /data/datafile $TPUSH_U
 
 ## 其他
 
-- 测试环境: CentOS 6.3, Python2.7
+- 测试环境: CentOS 6.3, Python2.7(最低支持Python2.6)
