@@ -115,7 +115,7 @@ class TPushManager(object):
                     self.error_hosts.append(conn.dest_ip)
                 else:
                     self.retry_count[conn.dest_ip] += 1
-                    logger.info('[RETRY](code:%d) %s -> %s, retry:%d, tail log:\n%s', conn.ssh_process.returncode,
+                    logger.warn('[RETRY](code:%d) %s -> %s, retry:%d, tail log:\n%s', conn.ssh_process.returncode,
                                  conn.src_ip, conn.dest_ip, self.retry_count[conn.dest_ip],  tail_lines(conn.logfile, 2))
                     self.dest_hosts.append(conn.dest_ip)
             else:

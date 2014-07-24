@@ -42,7 +42,7 @@ class SourcePool(object):
 
         def get_src_ip_distance(src_ip):
             src_ip_int = ip2long(src_ip)
-            distance = abs(dest_ip_int-src_ip_int)/100
+            distance = abs(dest_ip_int-src_ip_int)/1000  # /1000 忽略掉最后三位的影响
             return distance
 
         # 指定了目标IP, 下面尝试获取一个IP段相近的IP
@@ -95,3 +95,8 @@ class SourcePool(object):
         self.pool[ip]['conn'] -= num
         logger.debug("%s 可用连接: %d", self.pool[ip]['ip'], self.pool[ip]['conn'])
         return self.pool[ip]['conn']
+
+
+if __name__ == "__main__":
+    pool = SourcePool(4, ["1.1.1.1", "1.1.1.254", "1.1.2.10", "2.2.3.1"])
+    print pool.get_src("1.1.2.254")
