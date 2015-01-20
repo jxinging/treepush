@@ -202,7 +202,7 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
         elif conn_type == 'all':
             reconnect_session_list = self.connections[:]
         else:
-            logger.error(u"unknown reconnect args [%s]", type)
+            logger.error(u"unknown reconnect args [%s]", conn_type)
             return
         if not reconnect_session_list:
             return
@@ -220,7 +220,7 @@ reconnect <slow|all>        断开连接, 把目标IP重新放入等待执行队
             self.src_pool.add_src_conn(conn.src_ip)
 
     def finish(self):
-        logger.info('等待所有结点结束...')
+        logger.info('等待所有节点结束...')
         for conn in self.connections:
             if conn.ssh_process.poll() is None:  # 如果进程没有结束就发送 terminate 信号
                 # 这里不能发送 kill 信号, kill 会使进程直接退出, 不会清理 control socket 文件
